@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OpenVLA: An Open-Source Vision-Language-Action Model
 
 [![arXiv](https://img.shields.io/badge/arXiv-2406.09246-df2a2a.svg?style=for-the-badge)](https://arxiv.org/abs/2406.09246)
@@ -633,3 +634,6 @@ If you find our code or models useful in your work, please cite [our paper](http
     year={2024}
 } 
 ```
+=======
+# dex_openvla
+>>>>>>> 08f0231d34a0bcdaac03db4268c9672f3b621d46
