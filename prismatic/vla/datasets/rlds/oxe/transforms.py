@@ -27,6 +27,27 @@ from prismatic.vla.datasets.rlds.utils.data_utils import (
     relabel_bridge_actions,
 )
 
+def hot3d_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Applies to version of Bridge V2 in Open X-Embodiment mixture.
+
+    Note =>> In original Bridge V2 dataset, the first timestep has an all-zero action, so we remove it!
+    """
+    #for key in trajectory.keys():
+    #    if key == "traj_metadata":
+    #        continue
+    #    elif key in ["observation"]:
+    #        for key2 in trajectory[key]:
+    #            trajectory[key][key2] = trajectory[key][key2][:-1]
+    #    else:
+    #        trajectory[key] = trajectory[key][:-1]
+
+    # use wrist action to train
+
+    #trajectory['action'] = trajectory['wrist_action']
+    trajectory['observation']['state'] = trajectory['observation']['wrist_state']
+    #print('****hot3d transform****')
+    return trajectory
 
 def bridge_oxe_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -841,8 +862,13 @@ def libero_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     return trajectory
 
 
-# === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
+    'hot3d_dataset': hot3d_dataset_transform,
+    'arctic_dataset': hot3d_dataset_transform,
+}
+
+# === Registry ===
+OXE_STANDARDIZATION_TRANSFORMS_old = {
     "bridge_oxe": bridge_oxe_dataset_transform,
     "bridge_orig": bridge_orig_dataset_transform,
     "bridge_dataset": bridge_orig_dataset_transform,

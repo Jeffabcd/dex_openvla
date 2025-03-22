@@ -151,3 +151,17 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
+
+adapter_weights/
+data/
+genesis/
+HaWoR/
+new_data/
+saved_models/
+rlds_dataset_builder/arctic_dataset/data/
+rlds_dataset_builder/hot3d_dataset/data/
+Text2HOI/data/
+video/
+prismatic_ori/
+arctic/
+hot3d/

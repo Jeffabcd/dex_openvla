@@ -137,6 +137,12 @@ class PaddedCollatorForActionPrediction:
             attention_mask=attention_mask,
             labels=labels,
         )
+
+        ### 
+        for k in ['state', 'sequence_name', 'timestamp_ns', 'next_timestamp_ns', 'lang']:
+            output[k] = [instance[k] for instance in instances]
+
+
         if dataset_names is not None:
             output["dataset_names"] = dataset_names
         return output

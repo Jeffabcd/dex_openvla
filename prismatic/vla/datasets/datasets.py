@@ -26,6 +26,24 @@ from prismatic.vla.datasets.rlds.utils.data_utils import NormalizationType
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
 IGNORE_INDEX = -100
 
+@dataclass
+class TestingBatchTransform:
+
+    def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
+        '''
+           'full_image': input image,
+           'task_label': language instruction
+        '''
+        dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"][0]
+        lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        img = rlds_batch["observation"]["image_primary"][0]
+        state = rlds_batch['observation']['state']
+
+        return dict(full_image=img, task_label=lang, action=action, dataset_name=dataset_name, state=state, sequence_name=rlds_batch['sequence_name'], timestamp_ns=rlds_batch['timestamp_ns'],
+                )
+
+
 
 @dataclass
 class RLDSBatchTransform:
@@ -34,37 +52,81 @@ class RLDSBatchTransform:
     image_transform: ImageTransform
     prompt_builder_fn: Type[PromptBuilder]
     predict_stop_token: bool = True
+    pred_state: bool = False
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
+        # print('action', rlds_batch['action'].shape)
+        # print('image', rlds_batch['observation']['image_primary'].shape)
+        # print('lang', rlds_batch['task']['language_instruction'])
+        # print('sequence_name', rlds_batch['sequence_name'])
+        # print('state', rlds_batch['observation']['state'].shape)
+        # action (1, 6)
+        # image (1, 224, 224, 3)
+        # lang b'Cut scissors with right hand.'
+        # sequence_name b's02-scissors_use_02'
+        # state (1, 6)
+        # print('rlds_batch', rlds_batch)
+        # print('rlds_batch proprio', rlds_batch['observation']['proprio'])
+
+        def get_input_ids_and_labels(conversation, pred_len):
+            for turn in conversation:
+                prompt_builder.add_turn(turn["from"], turn["value"])
+
+            # Tokenize (w/ `base_tokenizer`)
+            input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
+            labels = list(input_ids)
+
+            # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
+            #   =>> IMPORTANT :: IF WE'RE USING HF LLM.forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
+            input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
+            
+            # print('*'*30)
+            # print('input_ids', input_ids)
+            # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
+            labels[: -(pred_len + 1)] = IGNORE_INDEX
+            if not self.predict_stop_token:
+                labels[-1] = IGNORE_INDEX
+            return input_ids, labels
+
+            
         dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"][0]
         img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        sequence_name = rlds_batch['sequence_name'].decode()
+        state = rlds_batch['observation']['state']
+        proprio = rlds_batch['observation']['proprio'][0][:-1]
+        # print('lang', lang)
+        # print('sequence_name', sequence_name)
+
+        #print(rlds_batch['observation']['state'].shape, 'kjlj ', rlds_batch['timestamp_ns'])
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
         conversation = [
-            {"from": "human", "value": f"What action should the robot take to {lang}?"},
+            {"from": "human", "value": f"What action should the person take to {lang}?"},
             {"from": "gpt", "value": self.action_tokenizer(action)},
         ]
-        for turn in conversation:
-            prompt_builder.add_turn(turn["from"], turn["value"])
+        input_ids, labels = get_input_ids_and_labels(conversation, len(action))
+        if self.pred_state:
+            # print('*'*30)
+            # print('input_idskkkkkkk', input_ids)
+            conversation = [
+                {"from": "human", "value": f"What is the position of human hands?"},
+                {"from": "gpt", "value": self.action_tokenizer(proprio)},
+            ]
+            _input_ids, _labels = get_input_ids_and_labels(conversation, len(proprio))
+            # print('*'*30)
+            input_ids = _input_ids
+            _labels[:len(labels)] = labels
+            labels = _labels
 
-        # Tokenize (w/ `base_tokenizer`)
-        input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
-        labels = list(input_ids)
-
-        # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
-        #   =>> IMPORTANT :: IF WE'RE USING HF LLM.forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
-        input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
+        # print('input_ids', input_ids)
+        # print('labels', labels)
         pixel_values = self.image_transform(img)
 
-        # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
-        labels[: -(len(action) + 1)] = IGNORE_INDEX
-        if not self.predict_stop_token:
-            labels[-1] = IGNORE_INDEX
-
-        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name)
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, lang=lang, state=state, sequence_name=sequence_name, timestamp_ns=rlds_batch['timestamp_ns'], next_timestamp_ns=rlds_batch['next_timestamp_ns']
+                )
 
 
 class RLDSDataset(IterableDataset):
@@ -77,6 +139,7 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        shuffle: bool = True,
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
@@ -94,7 +157,7 @@ class RLDSDataset(IterableDataset):
             mixture_spec,
             load_camera_views=("primary",),
             load_depth=False,
-            load_proprio=False,
+            load_proprio=True,
             load_language=True,
             action_proprio_normalization_type=NormalizationType.BOUNDS_Q99,
         )
@@ -116,6 +179,7 @@ class RLDSDataset(IterableDataset):
             traj_transform_threads=len(mixture_spec),
             traj_read_threads=len(mixture_spec),
             train=train,
+            shuffle=shuffle,
         )
 
         # If applicable, enable image augmentations
@@ -143,8 +207,14 @@ class RLDSDataset(IterableDataset):
         return make_interleaved_dataset(**rlds_config)
 
     def __iter__(self) -> Dict[str, Any]:
+        def print_new_batch(rlds_batch):
+            new_batch = self.batch_transform(rlds_batch)
+            print('new 66666666', new_batch.keys())
+            return new_batch
+
         for rlds_batch in self.dataset.as_numpy_iterator():
             yield self.batch_transform(rlds_batch)
+            #yield print_new_batch(rlds_batch)
 
     def __len__(self) -> int:
         return self.dataset_length

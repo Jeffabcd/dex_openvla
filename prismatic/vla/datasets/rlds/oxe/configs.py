@@ -37,6 +37,7 @@ class StateEncoding(IntEnum):
     POS_QUAT = 2            # EEF XYZ (3) + Quaternion (4) + Gripper Open/Close (1)
     JOINT = 3               # Joint Angles (7, <PAD> if fewer) + Gripper Open/Close (1)
     JOINT_BIMANUAL = 4      # Joint Angles (2 x [ Joint Angles (6) + Gripper Open/Close (1) ])
+    BI_EEF = 5              # EEF Delta XYZ (3) + EEF delta xyz (3)
     # fmt: on
 
 
@@ -47,11 +48,35 @@ class ActionEncoding(IntEnum):
     JOINT_POS = 2           # Joint Delta Position (7) + Gripper Open/Close (1)
     JOINT_POS_BIMANUAL = 3  # Joint Delta Position (2 x [ Joint Delta Position (6) + Gripper Open/Close (1) ])
     EEF_R6 = 4              # EEF Delta XYZ (3) + R6 (6) + Gripper Open/Close (1)
+    BI_EEF = 5              # EEF Delta XYZ (3) + EEF delta xyz (3)
     # fmt: on
 
+OXE_DATASET_CONFIGS = {
+    "hot3d_dataset": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": [None, None],
+        "state_encoding": StateEncoding.NONE,
+        "action_encoding": ActionEncoding.BI_EEF,
+    },
+    "arctic_dataset": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ['wrist_state', None],
+        "state_encoding": StateEncoding.BI_EEF,
+        "action_encoding": ActionEncoding.BI_EEF,
+    },
+    "bridge_orig": {  # Original version of Bridge V2 from project website
+        "image_obs_keys": {"primary": "image_0", "secondary": "image_1", "wrist": None},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["EEF_state", None, "gripper_state"],
+        "state_encoding": StateEncoding.POS_EULER,
+        "action_encoding": ActionEncoding.EEF_POS,
+    },
+}
 
 # === Individual Dataset Configs ===
-OXE_DATASET_CONFIGS = {
+OXE_DATASET_CONFIGS_old = {
     "fractal20220817_data": {
         "image_obs_keys": {"primary": "image", "secondary": None, "wrist": None},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},

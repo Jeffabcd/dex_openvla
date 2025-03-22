@@ -39,6 +39,9 @@ from transformers import AutoConfig, AutoImageProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 import wandb
+import sys
+sys.path.insert(0, os.path.abspath("/data2/laurence220016/Jeff/openvla/"))
+
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
@@ -48,6 +51,8 @@ from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
+import datetime
+
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -79,6 +84,7 @@ class FinetuneConfig:
 
     # Directory Paths
     data_root_dir: Path = Path("datasets/open-x-embodiment")        # Path to Open-X dataset directory
+    data_val_dir: Path = Path("datasets/open-x-embodiment")        # Path to Open-X dataset directory
     dataset_name: str = "droid_wipe"                                # Name of fine-tuning dataset (e.g., `droid_wipe`)
     run_root_dir: Path = Path("runs")                               # Path to directory to store logs & checkpoints
     adapter_tmp_dir: Path = Path("adapter-tmp")                     # Temporary directory for LoRA weights before fusing
@@ -105,7 +111,9 @@ class FinetuneConfig:
     # Tracking Parameters
     wandb_project: str = "openvla"                                  # Name of W&B project to log to (use default!)
     wandb_entity: str = "stanford-voltron"                          # Name of entity to log under
-    run_id_note: Optional[str] = None                               # Extra note for logging, Weights & Biases
+    run_id_note: Optional[str] = None  
+    
+    pred_state: bool = False                             # Extra note for logging, Weights & Biases
 
     # fmt: on
 
@@ -121,8 +129,10 @@ def finetune(cfg: FinetuneConfig) -> None:
     torch.cuda.empty_cache()
 
     # Configure Unique Experiment ID & Log Directory
+    now = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
+    currentTime = now.strftime('%Y_%m_%d_%H_%M')
     exp_id = (
-        f"{cfg.vla_path.split('/')[-1]}+{cfg.dataset_name}"
+        f"{cfg.vla_path.split('/')[-1]}+{cfg.dataset_name}+{str(cfg.data_root_dir).split('/')[-1]}"
         f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
         f"+lr-{cfg.learning_rate}"
     )
@@ -134,6 +144,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         exp_id += f"--{cfg.run_id_note}"
     if cfg.image_aug:
         exp_id += "--image_aug"
+    exp_id += currentTime
 
     # Start =>> Build Directories
     run_dir, adapter_dir = cfg.run_root_dir / exp_id, cfg.adapter_tmp_dir / exp_id
@@ -211,9 +222,19 @@ def finetune(cfg: FinetuneConfig) -> None:
         processor.tokenizer,
         image_transform=processor.image_processor.apply_transform,
         prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
+        pred_state=cfg.pred_state,
     )
     vla_dataset = RLDSDataset(
         cfg.data_root_dir,
+        cfg.dataset_name,
+        batch_transform,
+        resize_resolution=tuple(vla.module.config.image_sizes),
+        shuffle_buffer_size=cfg.shuffle_buffer_size,
+        image_aug=cfg.image_aug,
+    )
+
+    vla_val_dataset = RLDSDataset(
+        cfg.data_val_dir,
         cfg.dataset_name,
         batch_transform,
         resize_resolution=tuple(vla.module.config.image_sizes),
@@ -236,6 +257,15 @@ def finetune(cfg: FinetuneConfig) -> None:
         collate_fn=collator,
         num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
     )
+    val_dataloader = DataLoader(
+        vla_val_dataset,
+        batch_size=cfg.batch_size,
+        sampler=None,
+        collate_fn=collator,
+        num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
+    )
+    #print('dataloader', len(dataloader))
+    #raise
 
     # Initialize Logging =>> W&B
     if distributed_state.is_main_process:
@@ -246,12 +276,21 @@ def finetune(cfg: FinetuneConfig) -> None:
     recent_action_accuracies = deque(maxlen=cfg.grad_accumulation_steps)
     recent_l1_losses = deque(maxlen=cfg.grad_accumulation_steps)
 
+    val_steps = 100
+    best_val_l1 = 1000
     # Train!
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
         optimizer.zero_grad()
         for batch_idx, batch in enumerate(dataloader):
             with torch.autocast("cuda", dtype=torch.bfloat16):
+                #for k in batch.keys():
+                #    if not k == 'pixel_values':
+                #        print(k, '   ', batch[k])
+                # print(batch['input_ids'].shape, 'input_ids')
+                # print(batch['input_ids'])
+                # print(batch['labels'].shape, 'labels')
+                # print(batch['labels'])
                 output: CausalLMOutputWithPast = vla(
                     input_ids=batch["input_ids"].to(device_id),
                     attention_mask=batch["attention_mask"].to(device_id),
@@ -267,6 +306,9 @@ def finetune(cfg: FinetuneConfig) -> None:
             normalized_loss.backward()
 
             # Compute Accuracy and L1 Loss for Logging
+            # print(output.logits.shape, 'logits')
+            # print(output.logits)
+            
             action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1]
             action_preds = action_logits.argmax(dim=2)
             action_gt = batch["labels"][:, 1:].to(action_preds.device)
@@ -313,12 +355,63 @@ def finetune(cfg: FinetuneConfig) -> None:
 
             # Optimizer Step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(vla.parameters(), max_norm=1.0)
                 optimizer.step()
                 optimizer.zero_grad()
                 progress.update()
 
-            # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
             if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0:
+                # validation
+                print('Validation! ....')
+                collect_acc, collect_l1 = [], []
+                for batch_idx, batch in enumerate(val_dataloader):
+                    if batch_idx > val_steps:
+                        break
+                    #print(batch.keys())
+                    with torch.no_grad():
+                        with torch.autocast("cuda", dtype=torch.bfloat16):
+                            output: CausalLMOutputWithPast = vla(
+                                input_ids=batch["input_ids"].to(device_id),
+                                attention_mask=batch["attention_mask"].to(device_id),
+                                pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id),
+                                labels=batch["labels"],
+                            )
+                            loss = output.loss
+                    normalized_loss = loss / cfg.grad_accumulation_steps
+
+                    # Compute Accuracy and L1 Loss for Logging
+                    action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1]
+                    action_preds = action_logits.argmax(dim=2)
+                    action_gt = batch["labels"][:, 1:].to(action_preds.device)
+                    mask = action_gt > action_tokenizer.action_token_begin_idx
+
+                    # Compute Accuracy
+                    correct_preds = (action_preds == action_gt) & mask
+                    action_accuracy = correct_preds.sum().float() / mask.sum().float()
+
+                    # Compute L1 Loss on Predicted (Continuous) Actions
+                    continuous_actions_pred = torch.tensor(
+                        action_tokenizer.decode_token_ids_to_actions(action_preds[mask].cpu().numpy())
+                    )
+                    continuous_actions_gt = torch.tensor(
+                        action_tokenizer.decode_token_ids_to_actions(action_gt[mask].cpu().numpy())
+                    )
+                    action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+                    collect_acc.append(action_accuracy.item())
+                    collect_l1.append(action_l1_loss.item())
+                val_l1 = sum(collect_l1)/len(collect_l1)
+                print('validation acc: ', sum(collect_acc)/len(collect_acc))
+                print('validation l1 loss: ', val_l1)
+                wandb.log({
+                    'val/acc': sum(collect_acc)/len(collect_acc),
+                    'val/l1_loss': val_l1,
+                    } )
+
+
+
+            # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
+            if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0 :
+                best_val_l1 = val_l1
                 if distributed_state.is_main_process:
                     print(f"Saving Model Checkpoint for Step {gradient_step_idx}")
 

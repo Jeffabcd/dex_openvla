@@ -231,11 +231,16 @@ def get_dataset_statistics(
 
     overwatch.info("Computing dataset statistics. This may take a bit, but should only need to happen once.")
     actions, proprios, num_transitions, num_trajectories = [], [], 0, 0
+
+    print('in data util', len(dataset))
+
     for traj in tqdm(dataset.iterator(), total=cardinality if cardinality != tf.data.UNKNOWN_CARDINALITY else None):
         actions.append(traj["action"])
         proprios.append(traj["proprio"])
         num_transitions += traj["action"].shape[0]
         num_trajectories += 1
+
+    print('num_trajectories', num_trajectories)
 
     actions, proprios = np.concatenate(actions), np.concatenate(proprios)
     metadata = {

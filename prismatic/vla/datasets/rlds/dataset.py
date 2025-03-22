@@ -141,6 +141,8 @@ def make_dataset_from_rlds(
         # extracts images, depth images and proprio from the "observation" dict
         traj_len = tf.shape(traj["action"])[0]
         old_obs = traj["observation"]
+        #print('old traj', traj.keys())
+        #print('old_obs', old_obs.keys())
         new_obs = {}
         for new, old in image_obs_keys.items():
             if old is None:
@@ -154,6 +156,9 @@ def make_dataset_from_rlds(
             else:
                 new_obs[f"depth_{new}"] = old_obs[old]
 
+        # add current robot state
+        new_obs['state'] = old_obs['state']
+
         if state_obs_keys:
             new_obs["proprio"] = tf.concat(
                 [
@@ -166,6 +171,7 @@ def make_dataset_from_rlds(
                 ],
                 axis=1,
             )
+            print('new_obs proprio', new_obs['proprio'])
 
         # add timestep info
         new_obs["timestep"] = tf.range(traj_len)
@@ -178,12 +184,17 @@ def make_dataset_from_rlds(
                     f"Language key {language_key} has dtype {traj[language_key].dtype}, " "but it must be tf.string."
                 )
             task["language_instruction"] = traj.pop(language_key)
+        
 
         traj = {
             "observation": new_obs,
             "task": task,
             "action": tf.cast(traj["action"], tf.float32),
             "dataset_name": tf.repeat(name, traj_len),
+            # add hot3d information 
+            "sequence_name": traj['sequence_name'] if 'sequence_name' in traj else '',
+            "timestamp_ns": traj['timestamp_ns'] if 'timestamp_ns' in traj else 0,
+            "next_timestamp_ns": traj['next_timestamp_ns'] if 'next_timestamp_ns' in traj else 0,
         }
 
         if absolute_action_mask is not None:
@@ -198,17 +209,31 @@ def make_dataset_from_rlds(
             )
 
         return traj
+    #print('tfds builder', name, ';', data_dir)
 
     builder = tfds.builder(name, data_dir=data_dir)
 
+    # construct the dataset
+    if "val" not in builder.info.splits:
+        print('do not have valid set.............')
+        # split = "train[:95%]" if train else "train[95%:]"
+        split = 'all'
+    else:
+        print('have valid set...........')
+        split = "train" if train else "val"
+    print('=========== data split: ',split,'===================')
+
+    print('statistics', dataset_statistics)
     # load or compute dataset statistics
     if isinstance(dataset_statistics, str):
         with tf.io.gfile.GFile(dataset_statistics, "r") as f:
             dataset_statistics = json.load(f)
     elif dataset_statistics is None:
+        #print('no assign statistics ')
         full_dataset = dl.DLataset.from_rlds(
-            builder, split="all", shuffle=False, num_parallel_reads=num_parallel_reads
+            builder, split='all', shuffle=False, num_parallel_reads=num_parallel_reads
         ).traj_map(restructure, num_parallel_calls)
+        #print('b L', len(full_dataset))
         # tries to load from cache, otherwise computes on the fly
         dataset_statistics = get_dataset_statistics(
             full_dataset,
@@ -216,6 +241,7 @@ def make_dataset_from_rlds(
                 str(builder.info),
                 str(state_obs_keys),
                 inspect.getsource(standardize_fn) if standardize_fn is not None else "",
+                'all'
             ),
             save_dir=builder.data_dir,
         )
@@ -230,13 +256,12 @@ def make_dataset_from_rlds(
             )
         dataset_statistics["action"]["mask"] = np.array(action_normalization_mask)
 
-    # construct the dataset
-    if "val" not in builder.info.splits:
-        split = "train[:95%]" if train else "train[95%:]"
-    else:
-        split = "train" if train else "val"
 
-    dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+
+    try:
+        dataset = dl.DLataset.from_rlds(builder, split=split, shuffle=shuffle, num_parallel_reads=num_parallel_reads)
+    except:
+        dataset = dl.DLataset.from_rlds(builder, split='all', shuffle=shuffle, num_parallel_reads=num_parallel_reads)
 
     dataset = dataset.traj_map(restructure, num_parallel_calls)
     dataset = dataset.traj_map(
@@ -247,6 +272,7 @@ def make_dataset_from_rlds(
         ),
         num_parallel_calls,
     )
+    #print('statistics', dataset_statistics)
 
     return dataset, dataset_statistics
 
@@ -298,6 +324,18 @@ def apply_trajectory_transforms(
             function.
         num_parallel_calls (int, optional): number of parallel calls for map operations. Default to AUTOTUNE.
     """
+    #print('%'*30)
+    #def print_traj(x):
+    #   print('print traj~~~~~')
+    #   for k in x.keys():
+    #       print(x[k])
+    #       print(k)
+    #       if k == 'observation':
+    #           print(x[k].keys())
+    #   return x
+
+    #dataset.filter(print_traj) 
+
     if skip_unlabeled:
         if "language_instruction" not in dataset.element_spec["task"]:
             raise ValueError("skip_unlabeled=True but dataset does not have language labels.")
@@ -466,6 +504,7 @@ def make_interleaved_dataset(
     balance_weights: bool = False,
     traj_transform_threads: Optional[int] = None,
     traj_read_threads: Optional[int] = None,
+    shuffle: Optional[bool] = True,
 ) -> dl.DLataset:
     """
     Creates an interleaved dataset from list of dataset configs (kwargs). Returns a dataset of batched frames.
@@ -522,6 +561,7 @@ def make_interleaved_dataset(
 
     # Effective Dataset Length = Number of samples until each dataset has completed at least one epoch
     #   =>> Note :: Only counting the "primary" datasets (i.e., datasets with sample_weight == 1.0)
+    print(f'dataset_sizes: {dataset_sizes}, sample_weights: {sample_weights}, pr_id: {primary_dataset_indices}')
     dataset_len = int((np.array(dataset_sizes) / sample_weights)[primary_dataset_indices].max())
 
     # Allocate Threads based on Weights
@@ -569,7 +609,8 @@ def make_interleaved_dataset(
 
     # Shuffle the Dataset
     #   =>> IMPORTANT :: Shuffle AFTER .cache(), or else memory will still leak!
-    dataset = dataset.shuffle(shuffle_buffer_size)
+    if shuffle:
+        dataset = dataset.shuffle(shuffle_buffer_size)
 
     # Apply Frame Transforms
     overwatch.info("Applying frame transforms on dataset...")
@@ -584,5 +625,18 @@ def make_interleaved_dataset(
 
     # Save for Later
     dataset.sample_weights = sample_weights
+
+    #def print_traj(x):
+    #    print('print traj~~~~~')
+    #    for k in x.keys():
+    #        print(k)
+    #        if k == 'observation':
+    #            print(x[k].keys())
+    #    return x
+
+    #dataset.filter(print_traj) 
+
+    #print('train: ', train, 'vL', len(dataset))
+    print('dataset len: ', dataset_len)
 
     return dataset, dataset_len, all_dataset_statistics
