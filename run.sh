@@ -1,6 +1,6 @@
 # !/bin/bash
 
-CUDA_VISIBLE_DEVICES=5 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+CUDA_VISIBLE_DEVICES=4 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
   --vla_path "openvla/openvla-7b" \
   --data_root_dir './new_data/arctic_train_f/' \
   --data_val_dir './new_data/arctic_val_f/' \
@@ -8,7 +8,7 @@ CUDA_VISIBLE_DEVICES=5 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-s
   --run_root_dir 'saved_models/' \
   --adapter_tmp_dir 'adapter_weights/' \
   --lora_rank 32 \
-  --batch_size 2 \
+  --batch_size 8 \
   --grad_accumulation_steps 1 \
   --learning_rate 5e-4 \
   --image_aug True \

@@ -318,7 +318,7 @@ def testing(cfg: TestingConfig) -> None:
     print('Validation data: ', len(valid_dataloader)) 
 
 
-    train_data_steps = 50
+    train_data_steps = 300
     valid_data_steps = 100
     render_steps = train_data_steps
     collect_render_batch = []
@@ -379,8 +379,13 @@ def testing(cfg: TestingConfig) -> None:
                 action_gt = batch["labels"][:, 1:].to(action_preds.device)
                 print('action_gt',action_gt)
                 mask = action_gt > action_tokenizer.action_token_begin_idx
-                print('mask',mask)
-
+                if mask.sum() > 6:
+                    count_true = 0
+                    for i in range(mask.shape[1]):
+                        if mask[:, i]:
+                            count_true += 1
+                        if count_true > 6:
+                            mask[:, i] = False
                 # Compute Accuracy
                 correct_preds = (action_preds == action_gt) & mask
                 action_accuracy = correct_preds.sum().float() / mask.sum().float()

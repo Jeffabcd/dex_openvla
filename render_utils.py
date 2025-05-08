@@ -4,11 +4,13 @@ from matplotlib import pyplot as plt
 import io
 import wandb
 from PIL import Image 
-#sys.path.insert(0, os.path.abspath("/data2/laurence220016/Jeff/openvla/"))
+import sys
+sys.path.insert(0, os.path.abspath("/data2/laurence220016/Jeff/openvla/"))
 from hot3d.hot3d.utils import HOT3D_data_func, load_asset
 from Text2HOI.arctic_utils import ARCTIC_data_func
 import moviepy
 import moviepy.editor as mpy
+import torch
 stat_dict = {
     'hot3d': {
         'q01': [-0.11492515444755554, -0.10521660327911377, -0.11884290546178818, -0.09759321957826614, -0.11574954211711884, -0.11781377911567688], 
@@ -24,7 +26,7 @@ def unnormalize(pred_action, dataset_name):
     stat = stat_dict[dataset_name]
     low = np.array(stat['q01'])
     high = np.array(stat['q99'])
-    result_a = (pred_action + 1) * (high - low + 1e-8) / 2
+    result_a = (pred_action + 1) * (high - low + 1e-8) / 2.0
     result_a = result_a + low
     return result_a
 
@@ -49,15 +51,39 @@ def render_arctic_pred(collect_batch, pred_actions):
     collect_images = []
     collect_gt_points = []
     collect_lang = []
+    collect_prev_points = []
+    collect_gt_action_points = []
     arctic_data_func = ARCTIC_data_func()
     pred_sequence_name = ''
     for batch, p_a in zip(collect_batch, pred_actions):
         cur_state = batch['state'][0]
         # print('cur_state: ', cur_state)
+        
         #print(cur_state, 'jjjj',p_a)
-        next_state = cur_state[0] + unnormalize(p_a.cpu().numpy(),'arctic')
+        # print('lsklka batch: ', batch)
+        # print('lsklka p_a: ', p_a)
+        if isinstance(cur_state, torch.Tensor):
+            cur_state = cur_state.cpu().numpy()
+        if len(p_a.shape) >= 2:
+            p_a = p_a[0]
+        next_state = cur_state + unnormalize(p_a.cpu().numpy(),'arctic')
         next_state = next_state.reshape(2, -1)
+
+        # from gt action
+        gt_action = batch['gt_action'][0]
+        gt_action = unnormalize(gt_action.cpu().numpy(), 'arctic')
+        # print('gt_action: ',gt_action)
+        #gt_action_next = cur_state[0] + unnormalize(gt_action.cpu().numpy(), 'arctic')
+        gt_action_next = cur_state + gt_action
+        gt_action_next = gt_action_next.reshape(2, -1)
+
+
+        # print('next_state: ', next_state.shape)
         sequence_name = batch['sequence_name'][0]
+        if isinstance(sequence_name, bytes):
+            sequence_name = sequence_name.decode('utf-8')
+        elif not isinstance(sequence_name, str):
+            sequence_name = str(sequence_name)
         timestamp = batch['timestamp_ns'][0]
        
         
@@ -65,27 +91,53 @@ def render_arctic_pred(collect_batch, pred_actions):
         if sequence_name != pred_sequence_name:
             pred_sequence_name = sequence_name
             arctic_data_func.set_sequence(sequence_name)
+        
         lhand_joint, rhand_joint = arctic_data_func.get_3d_joints(timestamp)
-        # print('cur data_state:',[lhand_joint[0], rhand_joint[0]])
+        # print('cur data_state:',[lhand_joint[0], rhand_joint[0]]) 
+        n_lhand_joint, n_rhand_joint = arctic_data_func.get_3d_joints(next_timestamp)
+        # print('next data_state:',[n_lhand_joint[0], n_rhand_joint[0]])
+        # print('gt_action_next: ', [n_lhand_joint[0]-lhand_joint[0] , n_rhand_joint[0]-rhand_joint[0]])
+
         next_lhand_joint_2d, next_rhand_joint_2d = arctic_data_func.get_2d_joints(next_timestamp)
+        prev_lhand_joint_2d, prev_rhand_joint_2d = arctic_data_func.get_2d_joints(timestamp)
         pred_points_2d = arctic_data_func.transform_camera_to_2d(next_state)
+
+        gt_action_points_2d = arctic_data_func.transform_camera_to_2d(gt_action_next)
+        collect_gt_action_points.append(gt_action_points_2d)
+
+
         image = arctic_data_func.get_image(next_timestamp)
         collect_points.append(pred_points_2d)
         collect_images.append(image)
         collect_gt_points.append([next_lhand_joint_2d[0], next_rhand_joint_2d[0]])
-        collect_lang.append(batch['lang'][0])
+        collect_prev_points.append([prev_lhand_joint_2d[0], prev_rhand_joint_2d[0]])
+        # collect_lang.append(batch['lang'][0])
 
     freq = 1
     render_images = []
     collect_points = np.array(collect_points)
     collect_gt_points = np.array(collect_gt_points)
+    collect_gt_action_points = np.array(collect_gt_action_points)
+    # print('collect_points: ', collect_points.shape)
+    # print('collect_gt_points: ', collect_gt_points.shape)
+    collect_prev_points = np.array(collect_prev_points)
     for i in range(0, len(collect_images), freq):
         plt.clf()
         fig = plt.figure()
         plt.imshow(collect_images[i])
         plt.scatter(collect_points[i][:, 0], collect_points[i][:, 1], color='red', s=30)
         plt.scatter(collect_gt_points[i][:, 0], collect_gt_points[i][:, 1], color='blue', s=20)
-        plt.title(f"{collect_lang[i]} - Red: Predicted, Blue: Ground Truth")
+        #plt.scatter(collect_gt_action_points[i][:, 0], collect_gt_action_points[i][:, 1], color='green', s=20)
+        # plot gt action
+        # x = np.array([collect_prev_points[i][0][0], collect_gt_points[i][0][0]])
+        # y = np.array([collect_prev_points[i][0][1], collect_gt_points[i][0][1]])
+        # plt.plot(x, y, color='blue', linestyle='-', linewidth=2, marker='o', markersize=6)
+        #  # plot pred action
+        # x = np.array([collect_prev_points[i][0][0], collect_points[i][0][0]])
+        # y = np.array([collect_prev_points[i][0][1], collect_points[i][0][1]])
+        #plt.plot(x, y, color='red', linestyle='-', linewidth=2, marker='o', markersize=6)
+        
+        # plt.title(f"{collect_lang[i]} - Red: Predicted, Blue: Ground Truth")
         plt.show()
         # Convert figure to numpy array instead of displaying it
         img_array = fig_to_numpy(fig)

@@ -8,7 +8,7 @@ import tensorflow_hub as hub
 import h5py
 import cv2
 
-class ArcticDataset(tfds.core.GeneratorBasedBuilder):
+class H2ODataset(tfds.core.GeneratorBasedBuilder):
     """DatasetBuilder for example dataset."""
 
     VERSION = tfds.core.Version('1.0.0')
@@ -134,8 +134,8 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
         dataset_name = 'camera_frame_300_fps5'
         self.perm = None
         return {
-            'train': self._generate_examples(path=f'../../arctic/preprocess_data/arctic_data_intrinsics.h5', split='train'),
-            'val': self._generate_examples(path=f'../../arctic/preprocess_data/arctic_data_intrinsics.h5', split='val'),
+            'train': self._generate_examples(path=f'../../data/h2o/preprocess_data/', split='train'),
+            'val': self._generate_examples(path=f'../../data/h2o/preprocess_data/', split='val'),
             #'val': self._generate_examples(path='data/val/episode_*.npy'),
         }
     
@@ -157,7 +157,7 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
     def _generate_examples(self, path, split='') -> Iterator[Tuple[str, Any]]:
         """Generator of examples for each split."""
         
-        def _parse_example(seq_idx, path):
+        def _parse_example(sample_idx, path, seq_idx):
             # load raw data --> this should change for your dataset
             #data = np.load(episode_path, allow_pickle=True)     # this is a list of dicts in our case
             with h5py.File(path, 'r') as f:
@@ -176,9 +176,10 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
                 # Get timestamps
                 timestamps = f['timestamps'][f'seq_{seq_idx}'][:]
                 intrinsics = f['intrinsics'][f'seq_{seq_idx}'][:]
-                print(intrinsics.shape)
-                ori_width = f.attrs['ori_width']
-                ori_height = f.attrs['ori_height']
+                #print(intrinsics.shape)
+                resolution = f['resolutions'][f'seq_{seq_idx}'][:]
+                # ori_width = f.attrs['ori_width']
+                # ori_height = f.attrs['ori_height']
             joint_states = np.concatenate([lhand_joints, rhand_joints], axis=1) # (N, 42, 3)
             joint_states = joint_states.reshape(joint_states.shape[0], -1) # (N, 126)
             joint_actions = joint_states[1:] - joint_states[:-1] # (N-1, 126)
@@ -225,8 +226,8 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
                     'timestamp_ns': timestamps[i],
                     'next_timestamp_ns': timestamps[i+1] if i < (len(wrist_states)-1) else timestamps[i],
                     'language_embedding': language_embedding,
-                    'intrinsics': intrinsics[i].astype(np.float32),
-                    'ori_width_height': np.array([ori_width, ori_height], dtype=np.int32)
+                    'intrinsics': intrinsics.astype(np.float32),
+                    'ori_width_height': np.array([resolution[0], resolution[1]], dtype=np.int32)
                 })
 
             # create output data sample
@@ -238,21 +239,40 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
             }
 
             # if you want to skip an example for whatever reason, simply return None
-            return seq_idx, sample
+            return sample_idx, sample
 
         # create list of all examples
-        with h5py.File(path, 'r') as f:
-            num_sequences = f.attrs['num_sequences']
-            fps = f.attrs['fps']
-            original_fps = f.attrs['original_fps']
+        h5_files = glob.glob(f'{path}/*.h5')
+        h5_files = sorted(h5_files)
+        print('='*30)
+        print('h5_files: ', h5_files)
+        print('='*30)
+        file_index = []
+        total_length = 0
+        for h5_file in h5_files:
+            with h5py.File(h5_file, 'r') as f:
+                num_sequences = f.attrs['num_sequences']
+                fps = f.attrs['fps']
+                original_fps = f.attrs['original_fps']
+                print(f"Dataset contains {num_sequences} sequences")
+                print(f"FPS: {fps} (original: {original_fps})")
+
+                file_index.append(total_length)
+                total_length += num_sequences
+
+        print('total length: ', total_length)
+        print('file index: ', file_index)
+
+
         
-        print(f"Dataset contains {num_sequences} sequences")
-        print(f"FPS: {fps} (original: {original_fps})")
+
+        
+
 
 
         if self.perm is None:
             np.random.seed(42)
-            self.perm = np.random.permutation(num_sequences)
+            self.perm = np.random.permutation(total_length)
 
         #current_sequence_name = ['s01-box_grab_01', 's01-box_use_01', 's01-box_use_02', 's01-capsulemachine_grab_01', 's01-capsulemachine_use_01']
 
@@ -262,12 +282,22 @@ class ArcticDataset(tfds.core.GeneratorBasedBuilder):
         #         sequence_name = f['sequence_names'][f'seq_{sample}'][:][0].decode('utf-8')
         #     if sequence_name in current_sequence_name:
         #         yield _parse_example(int(sample), path)
+
+
         if split == 'train':
-            for sample in list(self.perm[:int(0.9*num_sequences)]):
-                yield _parse_example(int(sample), path)
+            start_idx = 0
+            end_idx = int(0.9*total_length)
         else:
-            for sample in list(self.perm[int(0.9*num_sequences):]):
-                yield _parse_example(int(sample), path)
+            start_idx = int(0.9*total_length)
+            end_idx = total_length
+
+        for sample in list(self.perm[start_idx:end_idx]):
+            file_idx = np.searchsorted(file_index, sample) if sample in file_index else np.searchsorted(file_index, sample) - 1
+            print('sample: ', sample, 'file_idx: ', file_idx)
+
+            h5_file = h5_files[file_idx]
+            sample_idx = sample - file_index[file_idx]
+            yield _parse_example(int(sample), h5_file, int(sample_idx))
         
         # for sample in list(range(num_sequences)):
         #     yield _parse_example(int(sample), path)

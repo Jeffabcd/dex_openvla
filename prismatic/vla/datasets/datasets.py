@@ -103,23 +103,25 @@ class RLDSBatchTransform:
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
+        # complex_action = np.concatenate([action, proprio], axis=0)
+        complex_action = action
         conversation = [
             {"from": "human", "value": f"What action should the person take to {lang}?"},
-            {"from": "gpt", "value": self.action_tokenizer(action)},
+            {"from": "gpt", "value": self.action_tokenizer(complex_action)},
         ]
-        input_ids, labels = get_input_ids_and_labels(conversation, len(action))
+        input_ids, labels = get_input_ids_and_labels(conversation, len(complex_action))
         if self.pred_state:
-            # print('*'*30)
-            # print('input_idskkkkkkk', input_ids)
-            conversation = [
-                {"from": "human", "value": f"What is the position of human hands?"},
-                {"from": "gpt", "value": self.action_tokenizer(proprio)},
-            ]
-            _input_ids, _labels = get_input_ids_and_labels(conversation, len(proprio))
-            # print('*'*30)
-            input_ids = _input_ids
-            _labels[:len(labels)] = labels
-            labels = _labels
+           # print('*'*30)
+           # print('input_idskkkkkkk', input_ids)
+           conversation = [
+               {"from": "human", "value": f"What is the position of human hands?"},
+               {"from": "gpt", "value": self.action_tokenizer(proprio)},
+           ]
+           _input_ids, _labels = get_input_ids_and_labels(conversation, len(proprio))
+           # print('*'*30)
+           input_ids = _input_ids
+           _labels[:len(labels)] = labels
+           labels = _labels
 
         # print('input_ids', input_ids)
         # print('labels', labels)

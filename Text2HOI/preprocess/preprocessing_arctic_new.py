@@ -109,8 +109,9 @@ def preprocessing_new():
     total_images = [] # #of data, #of frames, 256, 256, 3
     total_sequence_names = []
     total_timestamps = []
+    total_intrinsics = []
 
-    world_frame = True
+    world_frame = False
     print('subj_list', subj_list)
     print('arctic_obj_name', arctic_obj_name)
     
@@ -137,7 +138,8 @@ def preprocessing_new():
                 rhand_joints = proc_numpy(rhand_joints)
                 
                 if not world_frame:
-                    SE3_matrices, _ = process_egocam_result(egocam_data_path)
+                    SE3_matrices, intrinsics = process_egocam_result(egocam_data_path)
+
                     lhand_joints_cam = transform_joints_world_to_camera(lhand_joints, SE3_matrices)
                     rhand_joints_cam = transform_joints_world_to_camera(rhand_joints, SE3_matrices)
                 else:
@@ -173,8 +175,9 @@ def preprocessing_new():
 
                     lhand_joints_list = lhand_joints_cam[start_frame:end_frame]
                     rhand_joints_list = rhand_joints_cam[start_frame:end_frame]
-  
-
+                    intrinsics_list = np.stack([intrinsics for _ in range(end_frame-start_frame)], axis=0)
+                    #print('intrinsics_list.shape', intrinsics_list.shape)
+                    print('len', end_frame-start_frame)
                                        # Load images for the current sequence
                     sequence_images = []
                     sequence_timestamps = []
@@ -240,6 +243,9 @@ def preprocessing_new():
                     total_timestamps.append(np.array(sequence_timestamps))
                     total_lhand_joints.append(lhand_joints_list)
                     total_rhand_joints.append(rhand_joints_list)
+                    total_intrinsics.append(intrinsics_list)
+                    print('total_rhand_joints', np.array(rhand_joints_list).shape)
+                    print('total_intrinsics', np.array(intrinsics_list).shape)
 
     fps = 5 
     ori_fps = 30
@@ -250,19 +256,19 @@ def preprocessing_new():
         total_lhand_joints[i] = total_lhand_joints[i][fps_index]
         total_rhand_joints[i] = total_rhand_joints[i][fps_index]
         total_timestamps[i] = total_timestamps[i][fps_index]
-
+        total_intrinsics[i] = total_intrinsics[i][fps_index]
     print('total_images', len(total_images))
     print('total_instructions', len(total_instructions))
     print('total_lhand_joints', len(total_lhand_joints))
     print('total_rhand_joints', len(total_rhand_joints))
     print('total_sequence_names', len(total_sequence_names))
     print('total_timestamps', len(total_timestamps))
-
+    print('total_intrinsics', len(total_intrinsics))
     # Create directory if it doesn't exist
     os.makedirs("data/arctic/preprocess_data", exist_ok=True)
     
     # Save data using h5py
-    h5_path = "arctic/preprocess_data/arctic_data_world.h5"
+    h5_path = "arctic/preprocess_data/arctic_data_intrinsics.h5"
     with h5py.File(h5_path, 'w') as f:
         # Create groups for different data types
         images_group = f.create_group('images')
@@ -271,6 +277,7 @@ def preprocessing_new():
         rhand_joints_group = f.create_group('rhand_joints')
         sequence_names_group = f.create_group('sequence_names')
         timestamps_group = f.create_group('timestamps')
+        intrinsics_group = f.create_group('intrinsics')
         
         # Store each sequence
         for i in range(len(total_images)):
@@ -289,11 +296,17 @@ def preprocessing_new():
             
             # Store timestamps
             timestamps_group.create_dataset(f'seq_{i}', data=total_timestamps[i], compression='gzip')
+            
+            # Store intrinsics
+            intrinsics_group.create_dataset(f'seq_{i}', data=total_intrinsics[i], compression='gzip')
         
         # Store metadata
         f.attrs['num_sequences'] = len(total_images)
         f.attrs['fps'] = fps
         f.attrs['original_fps'] = ori_fps
+        # store original image size for usage of intrinsics
+        f.attrs['ori_width'] = 2800
+        f.attrs['ori_height'] = 2000
     
     print(f"Data successfully saved to {h5_path}")
     print("Finish:", time.time()-start_time)

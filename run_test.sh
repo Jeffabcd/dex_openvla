@@ -1,9 +1,9 @@
 # !/bin/bash
 
 #CUDA_VISIBLE_DEVICES=5 torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/testing.py \
-CUDA_VISIBLE_DEVICES=5 python vla-scripts/testing.py \
+CUDA_VISIBLE_DEVICES=6 python vla-scripts/testing.py \
   --vla_path "openvla/openvla-7b" \
-  --data_root_dir 'new_data/arctic_val_world/' \
+  --data_root_dir 'new_data/arctic_val_f/' \
   --dataset_name arctic_dataset \
   --run_root_dir 'saved_models/' \
   --adapter_tmp_dir 'adapter_weights/' \
@@ -15,8 +15,10 @@ CUDA_VISIBLE_DEVICES=5 python vla-scripts/testing.py \
   --save_steps 10000 \
   --wandb_project openvla_testing \
   --wandb_entity  sxfangteam \
-  --pred_state True \
-  --pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic_train_f+b2+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_21_12_32' 
+  --pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic_train_f+b2+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_21_12_32'
+
+  #--pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic_train_f+b4+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_23_22_07'
+  #--pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic_train_f+b4+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_23_02_41'
   # --pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic_train+b8+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_10_01_49' 
   #--pretrained_checkpoint './saved_models/openvla-7b+arctic_dataset+arctic+b8+lr-0.0005+lora-r32+dropout-0.0--image_aug2025_03_09_11_03' 
   
