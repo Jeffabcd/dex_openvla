@@ -1,0 +1,15 @@
+name: "h2o"
+root: "/mnt/tank/fang/h2o_data"
+obj_root: "/mnt/tank/fang/h2o_data/object"
+data_path: "/mnt/tank/fang/h2o_data/data.npz"
+data_obj_pc_path: "/mnt/tank/fang/h2o_data/obj.pkl"
+balance_weights_path: "/mnt/tank/fang/h2o_data/balance_weights.pkl"
+text_json: "/mnt/tank/fang/h2o_data/text.json"
+t2l_json: "/mnt/tank/fang/h2o_data/text_length.json"
+t2c_json: "/mnt/tank/fang/h2o_data/text_count.json"
+flat_hand: True
+max_nframes: 150
+data_ratio: 1
+augm: False
+data_num: 6600
+text_num: 680

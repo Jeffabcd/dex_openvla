@@ -1,0 +1,16 @@
+name: "humanpolicy"
+root: "../human_policy/downloads/"
+metadata_path: "../human_policy/downloads/ph2d_metadata.json"
+mano_root: "manopth/mano/models"
+data_path: "data/humanpolicy/data.npz"
+data_obj_pc_path: "data/humanpolicy/obj.pkl"
+balance_weights_path: "data/humanpolicy/balance_weights.pkl"
+text_json: "data/humanpolicy/text.json"
+t2l_json: "data/humanpolicy/text_length.json"
+t2c_json: "data/humanpolicy/text_count.json"
+flat_hand: False
+max_nframes: 150
+data_ratio: 1
+augm: False
+data_num: 4597
+text_num: 161

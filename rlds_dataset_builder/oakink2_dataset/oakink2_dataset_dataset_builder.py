@@ -7,8 +7,9 @@ import tensorflow_datasets as tfds
 import tensorflow_hub as hub
 import h5py
 import cv2
+from PIL import Image
 
-class H2ODataset(tfds.core.GeneratorBasedBuilder):
+class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
     """DatasetBuilder for example dataset."""
 
     VERSION = tfds.core.Version('1.0.0')
@@ -18,6 +19,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        print('8'*50)
         self._embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder-large/5")
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -33,7 +35,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                             doc='Main camera RGB observation.',
                         ),
                         'hand_state': tfds.features.Tensor(
-                            shape=(126,),
+                            shape=(36,),
                             dtype=np.float32,
                             doc='Robot state, consists of [x_L,y_L,z_L, x_R, y_R, z_R]',
                         ),
@@ -65,7 +67,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                         doc='Robot action, consists of [dx_L,dy_L,dz_L, dx_R, dy_R, dz_R]',
                     ),
                     'hand_action': tfds.features.Tensor(
-                        shape=(126,),
+                        shape=(36,),
                         dtype=np.float32,
                         doc='Robot action, consists of [dx_L,dy_L,dz_L, dx_R, dy_R, dz_R]',
                     ),
@@ -73,6 +75,11 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                         shape=(3, 3),
                         dtype=np.float32,
                         doc='Intrinsics matrix',
+                    ),
+                    'extrinsics': tfds.features.Tensor(
+                        shape=(4, 4),
+                        dtype=np.float32,
+                        doc='Extrinsics matrix',
                     ),
                     'ori_width_height': tfds.features.Tensor(
                         shape=(2,),
@@ -131,16 +138,18 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         """Define data splits."""
        # dataset_name = 'world_frame_50'
-        dataset_name = 'camera_frame_300_fps5'
         self.perm = None
         return {
-            'train': self._generate_examples(path=f'/mnt/lab-home/fang/Text2HOI/data/h2o/preprocess_data', split='train'),
-            'val': self._generate_examples(path=f'/mnt/lab-home/fang/Text2HOI/data/h2o/preprocess_data', split='val'),
+            'train': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data/', split='train'),
+            'val': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data/', split='val'),
             #'val': self._generate_examples(path='data/val/episode_*.npy'),
         }
     
     def cartesian_to_spherical(self, translation):
         # translation: (6,)
+        print('=========================')
+        print(translation)
+        print('========99999=================')
         translations = [translation[:3], translation[3:]]
         spherical_actions = []
         for translation in translations:
@@ -153,6 +162,24 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
         result = np.concatenate(spherical_actions, axis=0)
         print(result)
         return result
+    def transf_point_array_np(self, transf: np.ndarray, point: np.ndarray):
+        # transf: [..., 4, 4]
+        # point: [..., X, 3]
+        leading_shape = point.shape[:-2]
+        leading_dim = len(leading_shape)
+
+        res = (
+            np.swapaxes(
+                np.matmul(
+                    transf[..., :3, :3],
+                    np.swapaxes(point, leading_dim, leading_dim + 1),
+                ),
+                leading_dim,
+                leading_dim + 1,
+            )  # [..., X, 3]
+            + transf[..., :3, 3][..., np.newaxis, :]  # [..., 1, 3]
+        )
+        return res
 
     def _generate_examples(self, path, split='') -> Iterator[Tuple[str, Any]]:
         """Generator of examples for each split."""
@@ -178,16 +205,70 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                 intrinsics = f['intrinsics'][f'seq_{seq_idx}'][:]
                 #print(intrinsics.shape)
                 resolution = f['resolutions'][f'seq_{seq_idx}'][:]
+
+                extrinsics = f['extrinsics'][f'seq_{seq_idx}'][:]
+
                 # ori_width = f.attrs['ori_width']
                 # ori_height = f.attrs['ori_height']
-            joint_states = np.concatenate([lhand_joints, rhand_joints], axis=1) # (N, 42, 3)
-            joint_states = joint_states.reshape(joint_states.shape[0], -1) # (N, 126)
-            joint_actions = joint_states[1:] - joint_states[:-1] # (N-1, 126)
-            joint_actions = np.concatenate([joint_actions, np.zeros((1, joint_states.shape[1]))], axis=0) # (N, 126)
+
+            is_lhand = np.any(lhand_joints)
+            is_rhand = np.any(rhand_joints)
+            print(f'is lhand: {is_lhand}, is rhand: {is_rhand}')
+
+            n_extr = np.concatenate([extrinsics[:1], extrinsics[:-1]])
+            if is_lhand:
+                # transform to camera frame
+                c_lhand_joints = self.transf_point_array_np(extrinsics, lhand_joints)
+                # the position of t=i & t=i+1 should share same cam_extr at t=i
+                n_lhand_joints = self.transf_point_array_np(n_extr, lhand_joints)
+                lhand_actions = n_lhand_joints[1:]-c_lhand_joints[:-1]
+                lhand_actions = np.concatenate([lhand_actions, np.zeros((1,) + lhand_actions.shape[1:])])
+
+                lhand_joints = c_lhand_joints
+            else:
+                lhand_actions = lhand_joints
+
+            if is_rhand:
+                # transform to camera frame
+                c_rhand_joints = self.transf_point_array_np(extrinsics, rhand_joints)
+                # the position of t=i & t=i+1 should share same cam_extr at t=i
+                
+                n_rhand_joints = self.transf_point_array_np(n_extr, rhand_joints)
+                rhand_actions = n_rhand_joints[1:]-c_rhand_joints[:-1]
+                rhand_actions = np.concatenate([rhand_actions, np.zeros((1,) + rhand_actions.shape[1:])])
+
+                rhand_joints = c_rhand_joints
+            else:
+                rhand_actions = rhand_joints
+
+
+            joint_idx = [0, 2, 5, 9, 13, 17]  # only predict wrist + five finger
+            wrist_idx = [0]
+
+
+
+
+            joint_states = np.concatenate([lhand_joints[:, joint_idx], rhand_joints[:, joint_idx]], axis=1) # (N, 12, 3)
+            joint_states = joint_states.reshape(joint_states.shape[0], -1) # (N, 36)
+            # joint_actions = joint_states[1:] - joint_states[:-1] # (N-1, 126)
+            # joint_actions = np.concatenate([joint_actions, np.zeros((1, joint_states.shape[1]))], axis=0) # (N, 126)
+            
+            joint_actions = np.concatenate([lhand_actions[:, joint_idx], rhand_actions[:, joint_idx]], axis=1) # (N, 12, 3)
+            joint_actions = joint_actions.reshape(joint_actions.shape[0], -1) # (N, 36)
+
+
+            wrist_states = np.concatenate([lhand_joints[:, wrist_idx], rhand_joints[:, wrist_idx]], axis=1) # (N, 2, 3)
+            wrist_states = wrist_states.reshape(wrist_states.shape[0], -1) # (N, 6)
+            # joint_actions = joint_states[1:] - joint_states[:-1] # (N-1, 126)
+            # joint_actions = np.concatenate([joint_actions, np.zeros((1, joint_states.shape[1]))], axis=0) # (N, 126)
+            
+            wrist_actions = np.concatenate([lhand_actions[:, wrist_idx], rhand_actions[:, wrist_idx]], axis=1) # (N, 2, 3)
+            wrist_actions = wrist_actions.reshape(wrist_actions.shape[0], -1) # (N, 6)
+            
              
-            wrist_states = np.concatenate([lhand_joints[:, 0], rhand_joints[:, 0]], axis=1) # (N, 6)
-            wrist_actions = wrist_states[1:] - wrist_states[:-1] # (N-1, 6)
-            wrist_actions = np.concatenate([wrist_actions, np.zeros((1, wrist_states.shape[1]))], axis=0) # (N, 6)
+            # wrist_states = np.concatenate([lhand_joints[:, 0], rhand_joints[:, 0]], axis=1) # (N, 6)
+            # wrist_actions = wrist_states[1:] - wrist_states[:-1] # (N-1, 6)
+            # wrist_actions = np.concatenate([wrist_actions, np.zeros((1, wrist_states.shape[1]))], axis=0) # (N, 6)
 
 
             if wrist_states.shape[0] != wrist_actions.shape[0]:
@@ -195,6 +276,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                 raise
 
             # assemble episode --> here we're assuming demos so we set reward to 1 at the end
+            file_name = path.split('/')[-1].split('.')[0]
             episode = []
             for i, _image in enumerate(images):
                 # compute Kona language embedding
@@ -204,7 +286,12 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                 #rotated_image = cv2.rotate(img_resized_cv2, cv2.ROTATE_90_CLOCKWISE)
                 
                 #pre_image = cv2.resize(rotated_image, (256, 256), interpolation=cv2.INTER_AREA)
-                rgb_image = cv2.cvtColor(_image, cv2.COLOR_BGR2RGB)
+                #rgb_image = cv2.cvtColor(_image, cv2.COLOR_BGR2RGB)
+                if _image.shape[0] > 256:
+                    img = Image.fromarray(_image)
+                    rgb_image = np.array(img.resize((256, 256), Image.LANCZOS))
+                else:
+                    rgb_image = _image
                 
                 episode.append({
                     'observation': {
@@ -222,11 +309,12 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                     'is_last': i == (len(wrist_states) - 1),
                     'is_terminal': i == (len(wrist_states) - 1),
                     'language_instruction': instruction,
-                    'sequence_name': sequence_name,
+                    'sequence_name': f'{file_name}++{sequence_name}',
                     'timestamp_ns': timestamps[i],
                     'next_timestamp_ns': timestamps[i+1] if i < (len(wrist_states)-1) else timestamps[i],
                     'language_embedding': language_embedding,
                     'intrinsics': intrinsics.astype(np.float32),
+                    'extrinsics': extrinsics[i].astype(np.float32),
                     'ori_width_height': np.array([resolution[0], resolution[1]], dtype=np.int32)
                 })
 
@@ -249,9 +337,12 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
         print('='*30)
         file_index = []
         total_length = 0
+        new_h5_files = []
         for h5_file in h5_files:
             with h5py.File(h5_file, 'r') as f:
                 num_sequences = f.attrs['num_sequences']
+                if num_sequences == 0:
+                    continue
                 fps = f.attrs['fps']
                 original_fps = f.attrs['original_fps']
                 print(f"Dataset contains {num_sequences} sequences")
@@ -259,16 +350,10 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
 
                 file_index.append(total_length)
                 total_length += num_sequences
+                new_h5_files.append(h5_file)
 
         print('total length: ', total_length)
         print('file index: ', file_index)
-
-
-        
-
-        
-
-
 
         if self.perm is None:
             np.random.seed(42)
@@ -295,7 +380,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
             file_idx = np.searchsorted(file_index, sample) if sample in file_index else np.searchsorted(file_index, sample) - 1
             print('sample: ', sample, 'file_idx: ', file_idx)
 
-            h5_file = h5_files[file_idx]
+            h5_file = new_h5_files[file_idx]
             sample_idx = sample - file_index[file_idx]
             yield _parse_example(int(sample), h5_file, int(sample_idx))
         

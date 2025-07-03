@@ -15,7 +15,7 @@ import trimesh
 import pickle
 from collections import Counter
 import sys
-sys.path.insert(0, os.path.abspath("/data2/laurence220016/Jeff/openvla/Text2HOI/"))
+sys.path.insert(0, os.path.abspath("/home/bidex/dex_openvla/Text2HOI/"))
 
 from lib.models.mano import build_mano_aa
 
@@ -65,7 +65,7 @@ class ARCTIC_data_func():
         self.rhand_layer = build_mano_aa(is_rhand=True, flat_hand=arctic_config.flat_hand)
         self.rhand_layer = self.rhand_layer.cuda()
 
-    def set_sequence(self, sequence_name):
+    def set_sequence(self, sequence_name, timestamp=None):
         # sequence_name: subj-obj_name
         self.sequence_name = sequence_name
         subj, obj_name = sequence_name.split("-")

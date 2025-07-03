@@ -7,8 +7,9 @@ import tensorflow_datasets as tfds
 import tensorflow_hub as hub
 import h5py
 import cv2
+from PIL import Image
 
-class H2ODataset(tfds.core.GeneratorBasedBuilder):
+class TacoDataset(tfds.core.GeneratorBasedBuilder):
     """DatasetBuilder for example dataset."""
 
     VERSION = tfds.core.Version('1.0.0')
@@ -18,6 +19,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        print('8'*50)
         self._embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder-large/5")
 
     def _info(self) -> tfds.core.DatasetInfo:
@@ -131,16 +133,18 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         """Define data splits."""
        # dataset_name = 'world_frame_50'
-        dataset_name = 'camera_frame_300_fps5'
         self.perm = None
         return {
-            'train': self._generate_examples(path=f'/mnt/lab-home/fang/Text2HOI/data/h2o/preprocess_data', split='train'),
-            'val': self._generate_examples(path=f'/mnt/lab-home/fang/Text2HOI/data/h2o/preprocess_data', split='val'),
+            'train': self._generate_examples(path=f'/mnt/lab-home/fang/TACO-Instructions/dataset_utils/preprocess_data/', split='train'),
+            'val': self._generate_examples(path=f'/mnt/lab-home/fang/TACO-Instructions/dataset_utils/preprocess_data/', split='val'),
             #'val': self._generate_examples(path='data/val/episode_*.npy'),
         }
     
     def cartesian_to_spherical(self, translation):
         # translation: (6,)
+        print('=========================')
+        print(translation)
+        print('========99999=================')
         translations = [translation[:3], translation[3:]]
         spherical_actions = []
         for translation in translations:
@@ -193,7 +197,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
             if wrist_states.shape[0] != wrist_actions.shape[0]:
                 print(f'{path} dimension mismatch!')
                 raise
-
+            file_name = path.split('/')[-1].split('.')[0]
             # assemble episode --> here we're assuming demos so we set reward to 1 at the end
             episode = []
             for i, _image in enumerate(images):
@@ -204,7 +208,10 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                 #rotated_image = cv2.rotate(img_resized_cv2, cv2.ROTATE_90_CLOCKWISE)
                 
                 #pre_image = cv2.resize(rotated_image, (256, 256), interpolation=cv2.INTER_AREA)
-                rgb_image = cv2.cvtColor(_image, cv2.COLOR_BGR2RGB)
+                #rgb_image = cv2.cvtColor(_image, cv2.COLOR_BGR2RGB)
+                if _image.shape[0] > 256:
+                    img = Image.fromarray(_image)
+                    rgb_image = np.array(img.resize((256, 256), Image.LANCZOS))
                 
                 episode.append({
                     'observation': {
@@ -222,7 +229,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
                     'is_last': i == (len(wrist_states) - 1),
                     'is_terminal': i == (len(wrist_states) - 1),
                     'language_instruction': instruction,
-                    'sequence_name': sequence_name,
+                    'sequence_name': f'{file_name}++{sequence_name}',
                     'timestamp_ns': timestamps[i],
                     'next_timestamp_ns': timestamps[i+1] if i < (len(wrist_states)-1) else timestamps[i],
                     'language_embedding': language_embedding,
@@ -249,9 +256,12 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
         print('='*30)
         file_index = []
         total_length = 0
+        new_h5_files = []
         for h5_file in h5_files:
             with h5py.File(h5_file, 'r') as f:
                 num_sequences = f.attrs['num_sequences']
+                if num_sequences == 0:
+                    continue
                 fps = f.attrs['fps']
                 original_fps = f.attrs['original_fps']
                 print(f"Dataset contains {num_sequences} sequences")
@@ -259,16 +269,10 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
 
                 file_index.append(total_length)
                 total_length += num_sequences
+                new_h5_files.append(h5_file)
 
         print('total length: ', total_length)
         print('file index: ', file_index)
-
-
-        
-
-        
-
-
 
         if self.perm is None:
             np.random.seed(42)
@@ -295,7 +299,7 @@ class H2ODataset(tfds.core.GeneratorBasedBuilder):
             file_idx = np.searchsorted(file_index, sample) if sample in file_index else np.searchsorted(file_index, sample) - 1
             print('sample: ', sample, 'file_idx: ', file_idx)
 
-            h5_file = h5_files[file_idx]
+            h5_file = new_h5_files[file_idx]
             sample_idx = sample - file_index[file_idx]
             yield _parse_example(int(sample), h5_file, int(sample_idx))
         
