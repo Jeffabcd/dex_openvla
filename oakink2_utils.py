@@ -54,7 +54,7 @@ class OakInk2DataFunc:
         
 
 
-        print('dataset_root', dataset_root)
+        # print('dataset_root', dataset_root)
         # Initialize dataset
         self.oakink2_dataset = OakInk2__Dataset(
             dataset_prefix=dataset_root,
@@ -103,7 +103,7 @@ class OakInk2DataFunc:
             primitive_identifier: The primitive task identifier
         """
         primitive_identifier = None
-        print('set_sequence', seq_key, primitive_identifier)
+        # print('set_sequence', seq_key, primitive_identifier)
         primitive_id  = int(seq_key.split('_')[-1])
         file, seq_key = seq_key.split('++')
         last_part_id = len(seq_key)-1
@@ -206,6 +206,7 @@ class OakInk2DataFunc:
         # print('fid_list', fid_list)
         
         j_lhand_list, j_rhand_list = [], []
+        j_world_lhand, j_world_rhand = [], []
         img_list = []
         
         for fid in fid_list:
@@ -217,6 +218,7 @@ class OakInk2DataFunc:
                 offset_lh = fid - ptask_data.frame_range_lh[0]
                 if 0 <= offset_lh and offset_lh < lh_out["j"].shape[0]:
                     j_lh = lh_out["j"][offset_lh]
+                    j_world_lhand.append(j_lh)
                     j_lh = self._transform_points(j_lh, cam_extr)
                     j_lhand_list.append(j_lh)
                     
@@ -225,6 +227,7 @@ class OakInk2DataFunc:
                 offset_rh = fid - ptask_data.frame_range_rh[0]
                 if 0 <= offset_rh and offset_rh < rh_out["j"].shape[0]:
                     j_rh = rh_out["j"][offset_rh]
+                    j_world_rhand.append(j_rh)
                     j_rh = self._transform_points(j_rh, cam_extr)
                     j_rhand_list.append(j_rh)
             
@@ -244,18 +247,24 @@ class OakInk2DataFunc:
         
         if len(j_lhand_list) == 0:
             j_lhand_list = np.zeros((len(j_rhand_list), 21, 3)) 
+            j_world_lhand = np.zeros((len(j_rhand_list), 21, 3)) 
         else:
             j_lhand_list = np.array(j_lhand_list)
+            j_world_lhand = np.array(j_world_lhand)
             
         if len(j_rhand_list) == 0:
             j_rhand_list = np.zeros((len(j_lhand_list), 21, 3))
+            j_world_rhand = np.zeros((len(j_lhand_list), 21, 3))
         else:
             j_rhand_list = np.array(j_rhand_list)
+            j_world_rhand = np.array(j_world_rhand)
         
         # Store processed data
         self.current_images = img_list
         self.current_lhand_joints = j_lhand_list
         self.current_rhand_joints = j_rhand_list
+        self.world_lhand_joints = j_world_lhand
+        self.world_rhand_joints = j_world_rhand
     
     def _transform_points(self, points: np.ndarray, transform: np.ndarray) -> np.ndarray:
         """Transform points using transformation matrix."""
@@ -297,7 +306,7 @@ class OakInk2DataFunc:
         current_h, current_w = self.get_image(timestamp_idx).shape[:2]
         scale_w = current_w / self.resolution[0]
         scale_h = current_h / self.resolution[1]
-        print('get_2d_joints', scale_w, scale_h)
+        # print('get_2d_joints', scale_w, scale_h)
         scaled_intrinsic = self.current_cam_intr.copy()
         scaled_intrinsic[0, :] *= scale_w  # Scale fx and cx
         scaled_intrinsic[1, :] *= scale_h  # Scale fy and cy
@@ -330,20 +339,79 @@ class OakInk2DataFunc:
             index = self.fid_list.index(timestamp_idx)
         else:
             index = timestamp_idx
-
         return self.current_lhand_joints[index], self.current_rhand_joints[index]
-    def get_extrinsic(self, timestamp_idx: int) -> np.ndarray:
-        """Get the extrinsic matrix at the specified timestamp.
+    
+    def get_world_3d_joints(self, timestamp_idx: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Get 3D joint coordinates for both hands at the specified timestamp.
         
         Args:
-            timestamp_idx: Index of the timestamp to get extrinsic for
+            timestamp_idx: Index of the timestamp to get joints for
             
+        Returns:
+            Tuple of (left_hand_joints_3d, right_hand_joints_3d), each with shape (21, 3)
         """
         if self.current_primitive_task is None:
             raise ValueError("No sequence selected. Call set_sequence first.")
-        # if timestamp_idx in self.fid_list:
-        #     index = self.fid_list.index(timestamp_idx)
-        # else:
+        #index = self.current_frame_id_list.index(timestamp_idx)
+        if timestamp_idx in self.fid_list:
+            index = self.fid_list.index(timestamp_idx)
+        else:
+            index = timestamp_idx
+        return self.world_lhand_joints[index], self.world_rhand_joints[index]
+
+    def get_action(self, timestamp_idx: int, next_timestamp_idx: int) -> Tuple[np.ndarray, np.ndarray]:
+       
+        if self.current_primitive_task is None:
+            raise ValueError("No sequence selected. Call set_sequence first.")
+        #index = self.current_frame_id_list.index(timestamp_idx)
+        if timestamp_idx in self.fid_list:
+            index = self.fid_list.index(timestamp_idx)
+            n_index = self.fid_list.index(next_timestamp_idx)
+            # print(f'n index: {n_index}, index: {index}')
+        else:
+            index = timestamp_idx
+
+
+        is_lhand = np.any(self.world_lhand_joints)
+        is_rhand = np.any(self.world_rhand_joints)
+        # print('dataset state: ', self.current_lhand_joints[index][0], ' ', self.current_rhand_joints[index][0])
+        # print(f'is lhand: {is_lhand}, is rhand: {is_rhand}')
+        c_extr = self.current_cam_extr[timestamp_idx]
+        if is_lhand:
+            # transform to camera frame
+            c_lhand_joints = self._transform_points(self.world_lhand_joints[index], c_extr)
+            # the position of t=i & t=i+1 should share same cam_extr at t=i
+            n_lhand_joints = self._transform_points(self.world_lhand_joints[n_index], c_extr)
+            lhand_actions = n_lhand_joints - c_lhand_joints
+            
+        else:
+            lhand_actions = self.world_lhand_joints[index]
+
+        if is_rhand:
+            # transform to camera frame
+            c_rhand_joints = self._transform_points(self.world_rhand_joints[index], c_extr)
+            # the position of t=i & t=i+1 should share same cam_extr at t=i
+            n_rhand_joints = self._transform_points(self.world_rhand_joints[n_index], c_extr)
+            rhand_actions = n_rhand_joints - c_rhand_joints
+            
+        else:
+            rhand_actions = self.world_rhand_joints[index]
+
+        # print('l hand action: ', lhand_actions, ' r hand action: ', rhand_actions)
+        
+        return [torch.cat([torch.tensor(lhand_actions), torch.tensor(rhand_actions)], dim=-1)]
+
+    
+
+        
+    def get_extrinsic(self, timestamp_idx: int) -> np.ndarray:
+        """Get the extrinsic matrix at the specified timestamp.
+        Args:
+            timestamp_idx: Index of the timestamp to get extrinsic for
+        """
+        if self.current_primitive_task is None:
+            raise ValueError("No sequence selected. Call set_sequence first.")
+
         index = timestamp_idx
         return self.current_cam_extr[index]
 
@@ -403,7 +471,7 @@ class OakInk2DataFunc:
         self.resolution = (w, h)
         scale_w = current_w / self.resolution[0]
         scale_h = current_h / self.resolution[1]
-        print('transform_camera_to_2d', scale_w, scale_h)
+        # print('transform_camera_to_2d', scale_w, scale_h)
         scaled_intrinsic = self.current_cam_intr.copy()
         scaled_intrinsic[0, :] *= scale_w  # Scale fx and cx
         scaled_intrinsic[1, :] *= scale_h  # Scale fy and cy
