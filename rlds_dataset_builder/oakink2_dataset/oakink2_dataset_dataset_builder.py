@@ -51,16 +51,41 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                        #     doc='Wrist camera RGB observation.',
                        # ),
                     }),
+                    'next_hand_state': tfds.features.Tensor(
+                        shape=(36,),
+                        dtype=np.float32,
+                        doc='Robot state, consists of [x_L,y_L,z_L, x_R, y_R, z_R]',
+                    ),
                     'action': tfds.features.Tensor(
                         shape=(6,),
                         dtype=np.float32,
                         doc='Robot action, consists of [dx_L,dy_L,dz_L, dx_R, dy_R, dz_R]',
                     ),
-                    'action_spherical': tfds.features.Tensor(
+                    'hand_rotation': tfds.features.Tensor(
+                        shape=(6, 3),
+                        dtype=np.float32,
+                        doc='Robot rotation, consists of [rx_L,ry_L,rz_L, rx_R, ry_R, rz_R]',
+                    ),
+                    'hand_origin': tfds.features.Tensor(
                         shape=(6,),
                         dtype=np.float32,
-                        doc='Robot action in spherical coordinates, consists of [theta, phi, r]',
+                        doc='Robot origin, consists of [x_L,y_L,z_L, x_R, y_R, z_R]',
                     ),
+                    'hand_dist': tfds.features.Tensor(
+                        shape=(2,),
+                        dtype=np.float32,
+                        doc='Robot distance, consists of [d L, d R]',
+                    ),
+                    'object_pose': tfds.features.Tensor(
+                        shape=(8,4),
+                        dtype=np.float32,
+                        doc='Object pose, consists of [x, y, z, rx, ry, rz]',
+                    ),
+                    #'action_spherical': tfds.features.Tensor(
+                    #    shape=(6,),
+                    #    dtype=np.float32,
+                    #    doc='Robot action in spherical coordinates, consists of [theta, phi, r]',
+                    #),
                     'wrist_action': tfds.features.Tensor(
                         shape=(6,),
                         dtype=np.float32,
@@ -81,6 +106,7 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                         dtype=np.float32,
                         doc='Extrinsics matrix',
                     ),
+                    
                     'ori_width_height': tfds.features.Tensor(
                         shape=(2,),
                         dtype=np.int32,
@@ -104,6 +130,10 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                     'reward': tfds.features.Scalar(
                         dtype=np.float32,
                         doc='Reward if provided, 1 on final step for demos.'
+                    ),
+                    'active_hand': tfds.features.Scalar(
+                        dtype=np.int32,
+                        doc='active_hand',
                     ),
                     'is_first': tfds.features.Scalar(
                         dtype=np.bool_,
@@ -131,6 +161,10 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                     'file_path': tfds.features.Text(
                         doc='Path to the original data file.'
                     ),
+                    'fps': tfds.features.Scalar(
+                        dtype=np.int32,
+                        doc='fps',
+                    ),
                     
                 }),
             }))
@@ -140,15 +174,15 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
        # dataset_name = 'world_frame_50'
         self.perm = None
         return {
-            'train': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data/', split='train'),
-            'val': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data/', split='val'),
+            'train': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data_1007_allocentrictop/', split='train'),
+            #'val': self._generate_examples(path=f'/mnt/lab-home/fang/OakInk2/preprocess_data_fps30_1004_allocentric_top/', split='val'),
             #'val': self._generate_examples(path='data/val/episode_*.npy'),
         }
     
     def cartesian_to_spherical(self, translation):
         # translation: (6,)
         print('=========================')
-        print(translation)
+        # print(translation)
         print('========99999=================')
         translations = [translation[:3], translation[3:]]
         spherical_actions = []
@@ -160,7 +194,7 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
             spherical_actions.append(np.array([theta, phi, r]).astype(np.float32))
             
         result = np.concatenate(spherical_actions, axis=0)
-        print(result)
+        #print(result)
         return result
     def transf_point_array_np(self, transf: np.ndarray, point: np.ndarray):
         # transf: [..., 4, 4]
@@ -207,6 +241,16 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                 resolution = f['resolutions'][f'seq_{seq_idx}'][:]
 
                 extrinsics = f['extrinsics'][f'seq_{seq_idx}'][:]
+                lhand_rotations = f['lhand_rotations'][f'seq_{seq_idx}'][:]
+                rhand_rotations = f['rhand_rotations'][f'seq_{seq_idx}'][:]
+                lhand_origins = f['lhand_origins'][f'seq_{seq_idx}'][:]
+                rhand_origins = f['rhand_origins'][f'seq_{seq_idx}'][:]
+                lhand_dists = f['lhand_dist'][f'seq_{seq_idx}'][:]
+                rhand_dists = f['rhand_dist'][f'seq_{seq_idx}'][:]
+                lhand_object_poses = f['lhand_object_pose'][f'seq_{seq_idx}'][:]
+                rhand_object_poses = f['rhand_object_pose'][f'seq_{seq_idx}'][:]
+                fps = f.attrs['fps']
+            
 
                 # ori_width = f.attrs['ori_width']
                 # ori_height = f.attrs['ori_height']
@@ -214,6 +258,15 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
             is_lhand = np.any(lhand_joints)
             is_rhand = np.any(rhand_joints)
             print(f'is lhand: {is_lhand}, is rhand: {is_rhand}')
+            if is_lhand and not is_rhand:
+                active_hand = 1
+            elif not is_lhand and is_rhand:
+                active_hand = 2
+            elif is_lhand and is_rhand:
+                active_hand = 3
+            else:
+                active_hand = 4
+                
 
             n_extr = np.concatenate([extrinsics[:1], extrinsics[:-1]])
             if is_lhand:
@@ -222,40 +275,53 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                 # the position of t=i & t=i+1 should share same cam_extr at t=i
                 n_lhand_joints = self.transf_point_array_np(n_extr, lhand_joints)
                 lhand_actions = n_lhand_joints[1:]-c_lhand_joints[:-1]
-                lhand_actions = np.concatenate([lhand_actions, np.zeros((1,) + lhand_actions.shape[1:])])
-
-                lhand_joints = c_lhand_joints
+                #lhand_actions = np.concatenate([lhand_actions, np.zeros((1,) + lhand_actions.shape[1:])])
+                
+                # joints in world frame
+                #lhand_joints = c_lhand_joints
             else:
-                lhand_actions = lhand_joints
+                lhand_actions = lhand_joints[:-1]
 
             if is_rhand:
                 # transform to camera frame
                 c_rhand_joints = self.transf_point_array_np(extrinsics, rhand_joints)
                 # the position of t=i & t=i+1 should share same cam_extr at t=i
-                
                 n_rhand_joints = self.transf_point_array_np(n_extr, rhand_joints)
                 rhand_actions = n_rhand_joints[1:]-c_rhand_joints[:-1]
-                rhand_actions = np.concatenate([rhand_actions, np.zeros((1,) + rhand_actions.shape[1:])])
+                #rhand_actions = np.concatenate([rhand_actions, np.zeros((1,) + rhand_actions.shape[1:])])
 
-                rhand_joints = c_rhand_joints
+                #rhand_joints = c_rhand_joints
             else:
-                rhand_actions = rhand_joints
+                rhand_actions = rhand_joints[:-1]
 
 
             joint_idx = [0, 2, 5, 9, 13, 17]  # only predict wrist + five finger
             wrist_idx = [0]
+            #joint_fingertip_idx = joint_idx + [4, 8, 12, 16, 20]
 
-
-
+            # Skip if action sequence is empty
+            if rhand_actions.shape[0] == 0 or lhand_actions.shape[0] == 0:
+                print(f"Skipping sample {sample_idx} in {path} due to zero-length action sequence.")
+                return None
 
             joint_states = np.concatenate([lhand_joints[:, joint_idx], rhand_joints[:, joint_idx]], axis=1) # (N, 12, 3)
             joint_states = joint_states.reshape(joint_states.shape[0], -1) # (N, 36)
+            hand_rotation = np.concatenate([lhand_rotations, rhand_rotations], axis=1) # (N, 6, 3)
+            hand_origin = np.concatenate([lhand_origins, rhand_origins], axis=1) # (N, 6)
+            lhand_dists = lhand_dists.reshape(-1, 1)
+            rhand_dists = rhand_dists.reshape(-1, 1)
+            hand_dist = np.concatenate([lhand_dists, rhand_dists], axis=1) # (N, 2)
             # joint_actions = joint_states[1:] - joint_states[:-1] # (N-1, 126)
             # joint_actions = np.concatenate([joint_actions, np.zeros((1, joint_states.shape[1]))], axis=0) # (N, 126)
             
+            print('=========================')
+            print('hand_rotation', hand_rotation.shape)
+            print('hand_origin', hand_origin.shape)
+            print('hand_dist', hand_dist.shape)
+            print('========99999=================')
+
             joint_actions = np.concatenate([lhand_actions[:, joint_idx], rhand_actions[:, joint_idx]], axis=1) # (N, 12, 3)
             joint_actions = joint_actions.reshape(joint_actions.shape[0], -1) # (N, 36)
-
 
             wrist_states = np.concatenate([lhand_joints[:, wrist_idx], rhand_joints[:, wrist_idx]], axis=1) # (N, 2, 3)
             wrist_states = wrist_states.reshape(wrist_states.shape[0], -1) # (N, 6)
@@ -265,19 +331,30 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
             wrist_actions = np.concatenate([lhand_actions[:, wrist_idx], rhand_actions[:, wrist_idx]], axis=1) # (N, 2, 3)
             wrist_actions = wrist_actions.reshape(wrist_actions.shape[0], -1) # (N, 6)
             
+            object_poses = np.concatenate([lhand_object_poses, rhand_object_poses], axis=1) # (N, 8, 4)
              
             # wrist_states = np.concatenate([lhand_joints[:, 0], rhand_joints[:, 0]], axis=1) # (N, 6)
             # wrist_actions = wrist_states[1:] - wrist_states[:-1] # (N-1, 6)
             # wrist_actions = np.concatenate([wrist_actions, np.zeros((1, wrist_states.shape[1]))], axis=0) # (N, 6)
 
+            print('wrist_states shape', wrist_states.shape)
+            print('wrist action shape', wrist_actions.shape)
 
-            if wrist_states.shape[0] != wrist_actions.shape[0]:
-                print(f'{path} dimension mismatch!')
-                raise
+            # if wrist_states.shape[0] != wrist_actions.shape[0]:
+            #     print(f'{path} dimension mismatch!')
+            #     raise
 
             # assemble episode --> here we're assuming demos so we set reward to 1 at the end
             file_name = path.split('/')[-1].split('.')[0]
+            # h5_s_idx = file_name.split('_')[-2]
+            # h5_e_idx = file_name.split('_')[-1]
+            # json_file_name = f'oakink2_obj_pose_{h5_s_idx}_{h5_e_idx}.json'
+            # json_path_name = path.replace(f'{file_name}.h5', json_file_name)
+            # with open(json_path_name, 'r') as f:
+            #     total_obj_pose = json.load(f)
+            #     obj_pose_list = total_obj_pose[f'seq_{seq_idx}']
             episode = []
+            images = images[:-1]
             for i, _image in enumerate(images):
                 # compute Kona language embedding
                 language_embedding = self._embed([instruction])[0].numpy()
@@ -290,6 +367,7 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                 if _image.shape[0] > 256:
                     img = Image.fromarray(_image)
                     rgb_image = np.array(img.resize((256, 256), Image.LANCZOS))
+                    print('Noooooooooo')
                 else:
                     rgb_image = _image
                 
@@ -302,7 +380,10 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                     'wrist_action': wrist_actions[i].astype(np.float32), 
                     'hand_action': joint_actions[i].astype(np.float32), 
                     'action': wrist_actions[i].astype(np.float32),
-                    'action_spherical': self.cartesian_to_spherical(wrist_actions[i]).astype(np.float32),
+                    #'action_spherical': self.cartesian_to_spherical(wrist_actions[i]).astype(np.float32),
+                    'hand_rotation': hand_rotation[i].astype(np.float32),
+                    'hand_origin': hand_origin[i].astype(np.float32),
+                    'hand_dist': hand_dist[i].astype(np.float32),
                     'discount': 1.0,
                     'reward': float(i == (len(wrist_states) - 1)),
                     'is_first': i == 0,
@@ -312,17 +393,21 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                     'sequence_name': f'{file_name}++{sequence_name}',
                     'timestamp_ns': timestamps[i],
                     'next_timestamp_ns': timestamps[i+1] if i < (len(wrist_states)-1) else timestamps[i],
+                    'next_hand_state': joint_states[i+1].astype(np.float32),
                     'language_embedding': language_embedding,
                     'intrinsics': intrinsics.astype(np.float32),
                     'extrinsics': extrinsics[i].astype(np.float32),
-                    'ori_width_height': np.array([resolution[0], resolution[1]], dtype=np.int32)
+                    'ori_width_height': np.array([resolution[0], resolution[1]], dtype=np.int32),
+                    'active_hand':active_hand,
+                    'object_pose': object_poses[i].astype(np.float32),
                 })
 
             # create output data sample
             sample = {
                 'steps': episode,
                 'episode_metadata': {
-                    'file_path': path
+                    'file_path': path,
+                    'fps':fps
                 }
             }
 
@@ -338,6 +423,7 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
         file_index = []
         total_length = 0
         new_h5_files = []
+        idx_map = {}
         for h5_file in h5_files:
             with h5py.File(h5_file, 'r') as f:
                 num_sequences = f.attrs['num_sequences']
@@ -345,11 +431,29 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
                     continue
                 fps = f.attrs['fps']
                 original_fps = f.attrs['original_fps']
+                valid_count = 0
+                idx_map[len(new_h5_files)] = {}
+                for j in range(num_sequences):
+                    lhand_joints = f['lhand_joints'][f'seq_{j}'][:]
+                    rhand_joints = f['rhand_joints'][f'seq_{j}'][:]
+
+                    is_lhand = np.any(lhand_joints)
+                    is_rhand = np.any(rhand_joints)
+
+                    #if is_lhand == False or is_rhand == False:
+                    #    continue
+
+                    idx_map[len(new_h5_files)][valid_count] = j
+                    valid_count += 1
+                if valid_count == 0:
+                    continue
+
                 print(f"Dataset contains {num_sequences} sequences")
                 print(f"FPS: {fps} (original: {original_fps})")
 
+
                 file_index.append(total_length)
-                total_length += num_sequences
+                total_length += valid_count
                 new_h5_files.append(h5_file)
 
         print('total length: ', total_length)
@@ -368,12 +472,12 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
         #     if sequence_name in current_sequence_name:
         #         yield _parse_example(int(sample), path)
 
-
+        train_ratio = 1
         if split == 'train':
             start_idx = 0
-            end_idx = int(0.9*total_length)
+            end_idx = int(train_ratio*total_length)
         else:
-            start_idx = int(0.9*total_length)
+            start_idx = int(train_ratio*total_length)
             end_idx = total_length
 
         for sample in list(self.perm[start_idx:end_idx]):
@@ -381,8 +485,11 @@ class Oakink2Dataset(tfds.core.GeneratorBasedBuilder):
             print('sample: ', sample, 'file_idx: ', file_idx)
 
             h5_file = new_h5_files[file_idx]
-            sample_idx = sample - file_index[file_idx]
-            yield _parse_example(int(sample), h5_file, int(sample_idx))
+
+            sample_idx = idx_map[file_idx][sample - file_index[file_idx]]
+            result = _parse_example(int(sample), h5_file, int(sample_idx))
+            if result is not None:
+                yield result
         
         # for sample in list(range(num_sequences)):
         #     yield _parse_example(int(sample), path)
